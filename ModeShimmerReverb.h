@@ -1,5 +1,4 @@
 #pragma once
-// #include "PlateReverb.h" // Reverting to ReverbSc for stability
 #include "daisy_legio.h"
 #include "daisysp-lgpl.h"
 #include "daisysp.h"
@@ -73,8 +72,8 @@ public:
     // Init Pre-Delay
     predelay_l_.Init();
     predelay_r_.Init();
-    predelay_l_.SetDelay(0.04f * fs_); // Fixed 40ms
-    predelay_r_.SetDelay(0.04f * fs_);
+    predelay_l_.SetDelay(kPredelayTime * fs_);
+    predelay_r_.SetDelay(kPredelayTime * fs_);
 
     shimmer_amount_ = 0.0f;
     mix_ = 0.5f;
@@ -104,15 +103,15 @@ public:
     float wet_in_l = input_hpf_l2_.High();
     float wet_in_r = input_hpf_r2_.High();
 
-    // Attenuate input to prevent internal clipping (0.8x)
-    wet_in_l *= 0.8f;
-    wet_in_r *= 0.8f;
+    // Attenuate input to prevent internal clipping
+    wet_in_l *= kInputAttenuation;
+    wet_in_r *= kInputAttenuation;
 
     // 2. Pre-Delay with Hermite Interpolation
     predelay_l_.Write(wet_in_l);
     predelay_r_.Write(wet_in_r);
-    float pre_l = predelay_l_.ReadHermite(0.04f * fs_);
-    float pre_r = predelay_r_.ReadHermite(0.04f * fs_);
+    float pre_l = predelay_l_.ReadHermite(kPredelayTime * fs_);
+    float pre_r = predelay_r_.ReadHermite(kPredelayTime * fs_);
 
     // 3. Reverb Engine
     // Add Shimmer Feedback to Input
@@ -129,8 +128,8 @@ public:
     float clean_r = anti_rumble_r_.High();
 
     // Smooth pitch transitions to reduce artifacts
-    fonepole(current_pitch_l_, target_pitch_l_, 0.001f);
-    fonepole(current_pitch_r_, target_pitch_r_, 0.001f);
+    fonepole(current_pitch_l_, target_pitch_l_, kPitchSmoothCoeff);
+    fonepole(current_pitch_r_, target_pitch_r_, kPitchSmoothCoeff);
     pshift_l_.SetTransposition(current_pitch_l_);
     pshift_r_.SetTransposition(current_pitch_r_);
 
@@ -150,28 +149,33 @@ public:
     filtered_shifted_r = dc_blocker_r_.High();
 
     // Shimmer Loop Compressor (Envelope Follower + Soft Knee)
-    shimmer_env_l_ = 0.99f * shimmer_env_l_ + 0.01f * fabsf(filtered_shifted_l);
-    shimmer_env_r_ = 0.99f * shimmer_env_r_ + 0.01f * fabsf(filtered_shifted_r);
+    shimmer_env_l_ = kShimmerCompAttack * shimmer_env_l_ +
+                     kShimmerCompRelease * fabsf(filtered_shifted_l);
+    shimmer_env_r_ = kShimmerCompAttack * shimmer_env_r_ +
+                     kShimmerCompRelease * fabsf(filtered_shifted_r);
 
-    const float kShimmerThreshold = 0.4f;
     float shimmer_gain_l = 1.0f;
     float shimmer_gain_r = 1.0f;
 
     if (shimmer_env_l_ > kShimmerThreshold) {
       float over = shimmer_env_l_ - kShimmerThreshold;
-      shimmer_gain_l = kShimmerThreshold / (kShimmerThreshold + over * 0.66f);
+      shimmer_gain_l =
+          kShimmerThreshold / (kShimmerThreshold + over * kShimmerCompRatio);
     }
     if (shimmer_env_r_ > kShimmerThreshold) {
       float over = shimmer_env_r_ - kShimmerThreshold;
-      shimmer_gain_r = kShimmerThreshold / (kShimmerThreshold + over * 0.66f);
+      shimmer_gain_r =
+          kShimmerThreshold / (kShimmerThreshold + over * kShimmerCompRatio);
     }
 
     filtered_shifted_l *= shimmer_gain_l;
     filtered_shifted_r *= shimmer_gain_r;
 
     // Soft Limiter for Feedback Loop
-    filtered_shifted_l = tanhf(filtered_shifted_l * 1.1f) * 0.9f;
-    filtered_shifted_r = tanhf(filtered_shifted_r * 1.1f) * 0.9f;
+    filtered_shifted_l =
+        tanhf(filtered_shifted_l * kShimmerLimitGain) * kShimmerLimitScale;
+    filtered_shifted_r =
+        tanhf(filtered_shifted_r * kShimmerLimitGain) * kShimmerLimitScale;
 
     // Update feedback vars for next frame
     shimmer_fb_l_ = filtered_shifted_l;
@@ -193,8 +197,8 @@ public:
 
     // Encoder Turn (Shimmer Amount)
     float inc = hw.encoder.Increment();
-    shimmer_amount_ += inc * 0.05f;
-    shimmer_amount_ = fclamp(shimmer_amount_, 0.0f, 0.4f);
+    shimmer_amount_ += inc * kShimmerEncoderSensitivity;
+    shimmer_amount_ = fclamp(shimmer_amount_, 0.0f, kShimmerAmountMax);
 
     // Switches
     int sw_pitch = hw.sw[DaisyLegio::SW_LEFT].Read();
@@ -203,47 +207,80 @@ public:
     // Map Pitch Interval (Left Switch)
     float base_pitch = 12.0f;
     if (sw_pitch == 2)
-      base_pitch = 12.0f; // +1 Octave
+      base_pitch = kPitchOctaveUp;
     else if (sw_pitch == 1)
-      base_pitch = 7.0f; // +5th
+      base_pitch = kPitchFifthUp;
     else
-      base_pitch = -12.0f; // -1 Octave
+      base_pitch = kPitchOctaveDown;
 
     // Set target pitch with slight detune for width (+/- 5 cents)
-    target_pitch_l_ = base_pitch - 0.05f;
-    target_pitch_r_ = base_pitch + 0.05f;
+    target_pitch_l_ = base_pitch - kPitchDetune;
+    target_pitch_r_ = base_pitch + kPitchDetune;
 
     // Map Tone (Right Switch)
     if (sw_tone == 2) { // Bright
-      tone_filter_.SetFreq(15000.0f);
-      tone_filter_r_.SetFreq(15000.0f);
-      verb_.SetLpFreq(12000.0f);
+      tone_filter_.SetFreq(kToneBrightFreq);
+      tone_filter_r_.SetFreq(kToneBrightFreq);
+      verb_.SetLpFreq(kVerbBrightFreq);
     } else if (sw_tone == 1) { // Normal
-      tone_filter_.SetFreq(5000.0f);
-      tone_filter_r_.SetFreq(5000.0f);
-      verb_.SetLpFreq(4000.0f);
+      tone_filter_.SetFreq(kToneNormalFreq);
+      tone_filter_r_.SetFreq(kToneNormalFreq);
+      verb_.SetLpFreq(kVerbNormalFreq);
     } else { // Dark
-      tone_filter_.SetFreq(1000.0f);
-      tone_filter_r_.SetFreq(1000.0f);
-      verb_.SetLpFreq(1000.0f);
+      tone_filter_.SetFreq(kToneDarkFreq);
+      tone_filter_r_.SetFreq(kToneDarkFreq);
+      verb_.SetLpFreq(kVerbDarkFreq);
     }
 
     // Variable HPF (150Hz - 500Hz) controlled by bottom knob
-    float target_hpf = 150.0f + (k_hpf * 350.0f);
-    fonepole(hpf_freq_, target_hpf, 0.01f);
+    float target_hpf = kHPFMin + (k_hpf * kHPFRange);
+    fonepole(hpf_freq_, target_hpf, kHPFSmoothCoeff);
     input_hpf_l_.SetFreq(hpf_freq_);
     input_hpf_r_.SetFreq(hpf_freq_);
     input_hpf_l2_.SetFreq(hpf_freq_);
     input_hpf_r2_.SetFreq(hpf_freq_);
 
     // Map decay to feedback 0.7 -> 0.98
-    verb_.SetFeedback(0.7f + (k_decay * 0.28f));
+    verb_.SetFeedback(kDecayMin + (k_decay * kDecayRange));
 
     // Mix is now fixed at 0.5 (50/50) since bottom knob controls HPF
-    mix_ = 0.5f;
+    mix_ = kMixFixed;
   }
 
 private:
+  // Audio Processing Constants
+  static constexpr float kPredelayTime = 0.04f;
+  static constexpr float kInputAttenuation = 0.8f;
+  static constexpr float kPitchSmoothCoeff = 0.001f;
+  static constexpr float kShimmerCompAttack = 0.99f;
+  static constexpr float kShimmerCompRelease = 0.01f;
+  static constexpr float kShimmerThreshold = 0.4f;
+  static constexpr float kShimmerCompRatio = 0.66f;
+  static constexpr float kShimmerLimitGain = 1.1f;
+  static constexpr float kShimmerLimitScale = 0.9f;
+
+  // Control Constants
+  static constexpr float kShimmerEncoderSensitivity = 0.05f;
+  static constexpr float kShimmerAmountMax = 0.4f;
+  static constexpr float kPitchOctaveUp = 12.0f;
+  static constexpr float kPitchFifthUp = 7.0f;
+  static constexpr float kPitchOctaveDown = -12.0f;
+  static constexpr float kPitchDetune = 0.05f;
+  static constexpr float kHPFMin = 150.0f;
+  static constexpr float kHPFRange = 350.0f;
+  static constexpr float kHPFSmoothCoeff = 0.01f;
+  static constexpr float kDecayMin = 0.7f;
+  static constexpr float kDecayRange = 0.28f;
+  static constexpr float kMixFixed = 0.5f;
+
+  // Tone Constants
+  static constexpr float kToneBrightFreq = 15000.0f;
+  static constexpr float kToneNormalFreq = 5000.0f;
+  static constexpr float kToneDarkFreq = 1000.0f;
+  static constexpr float kVerbBrightFreq = 12000.0f;
+  static constexpr float kVerbNormalFreq = 4000.0f;
+  static constexpr float kVerbDarkFreq = 1000.0f;
+
   ReverbSc verb_;
   PitchShifter pshift_l_, pshift_r_;
   Svf tone_filter_, tone_filter_r_;
@@ -261,13 +298,4 @@ private:
   float hpf_freq_;                          // Variable HPF frequency
   float target_pitch_l_, target_pitch_r_;   // Target pitch for smoothing
   float current_pitch_l_, current_pitch_r_; // Current pitch (smoothed)
-
-  float SoftClip(float in) {
-    if (in < -1.0f)
-      return -0.6666667f;
-    else if (in > 1.0f)
-      return 0.6666667f;
-    else
-      return in - (in * in * in) * 0.3333333f;
-  }
 };

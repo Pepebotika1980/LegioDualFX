@@ -62,24 +62,28 @@ public:
       hist_l_[i] = 0.0f;
       hist_r_[i] = 0.0f;
     }
+
+    // Initialize stereo spread cache
+    stereo_spread_ = 1.0f;
   }
 
   void Process(float in_l, float in_r, float *out_l, float *out_r) {
     // 0. Noise Gate (Downward Expander)
     // Simple envelope follower
-    env_follower_l_ = 0.99f * env_follower_l_ + 0.01f * fabsf(in_l);
-    env_follower_r_ = 0.99f * env_follower_r_ + 0.01f * fabsf(in_r);
+    env_follower_l_ =
+        kGateAttack * env_follower_l_ + kGateRelease * fabsf(in_l);
+    env_follower_r_ =
+        kGateAttack * env_follower_r_ + kGateRelease * fabsf(in_r);
 
     float gate_gain_l = 1.0f;
     float gate_gain_r = 1.0f;
-    const float kThreshold = 0.002f; // ~ -54dB
 
-    if (env_follower_l_ < kThreshold) {
-      gate_gain_l = env_follower_l_ / kThreshold; // Soft knee expansion
-      gate_gain_l *= gate_gain_l;                 // Square it for steeper curve
+    if (env_follower_l_ < kGateThreshold) {
+      gate_gain_l = env_follower_l_ / kGateThreshold; // Soft knee expansion
+      gate_gain_l *= gate_gain_l; // Square it for steeper curve
     }
-    if (env_follower_r_ < kThreshold) {
-      gate_gain_r = env_follower_r_ / kThreshold;
+    if (env_follower_r_ < kGateThreshold) {
+      gate_gain_r = env_follower_r_ / kGateThreshold;
       gate_gain_r *= gate_gain_r;
     }
 
@@ -97,7 +101,7 @@ public:
 
     // 1. Apply Drive (Pre-Filter) with 2x Hermite Oversampling
     // Gain staging: Boost input based on drive amount
-    float drive_gain = 1.0f + (drive_amount_ * 16.0f);
+    float drive_gain = 1.0f + (drive_amount_ * kDriveGainMultiplier);
     float dry_l = clean_l * drive_gain;
     float dry_r = clean_r * drive_gain;
 
@@ -115,8 +119,10 @@ public:
     float dist_r_curr = ApplyDrive(dry_r);
 
     // Decimation with weighted averaging (anti-aliasing)
-    float driven_l = (dist_l_mid * 0.4f + dist_l_curr * 0.6f);
-    float driven_r = (dist_r_mid * 0.4f + dist_r_curr * 0.6f);
+    float driven_l = (dist_l_mid * kOversampleMidWeight +
+                      dist_l_curr * kOversampleCurrWeight);
+    float driven_r = (dist_r_mid * kOversampleMidWeight +
+                      dist_r_curr * kOversampleCurrWeight);
 
     // Update history buffer
     hist_l_[0] = hist_l_[1];
@@ -128,15 +134,15 @@ public:
     hist_r_[2] = dry_r;
 
     // 2. Apply Filter (24dB/oct - 4 Pole)
-    // Stereo Spread: Offset Right channel cutoff slightly for width
-    float spread = 1.0f + (res_ * 0.05f); // Up to 5% spread
+    // Stereo Spread: Offset Right channel cutoff slightly for width (cached in
+    // UpdateControls)
 
     // Stage 1
     svf_l_.SetFreq(freq_);
     svf_l_.SetRes(res_);
     svf_l_.SetDrive(drive_);
 
-    svf_r_.SetFreq(freq_ * spread);
+    svf_r_.SetFreq(freq_ * stereo_spread_);
     svf_r_.SetRes(res_);
     svf_r_.SetDrive(drive_);
 
@@ -145,7 +151,7 @@ public:
     svf_l2_.SetRes(res_);
     svf_l2_.SetDrive(drive_);
 
-    svf_r2_.SetFreq(freq_ * spread);
+    svf_r2_.SetFreq(freq_ * stereo_spread_);
     svf_r2_.SetRes(res_);
     svf_r2_.SetDrive(drive_);
 
@@ -215,7 +221,7 @@ public:
 
     // Encoder Turn (Drive Amount)
     float inc = hw.encoder.Increment();
-    drive_amount_ += inc * 0.05f; // 5% change per click
+    drive_amount_ += inc * kDriveEncoderSensitivity;
     drive_amount_ = fclamp(drive_amount_, 0.0f, 1.0f);
 
     // Switches
@@ -243,12 +249,33 @@ public:
     float target_freq = fmap(k_cutoff, 5.0f, 18000.0f, Mapping::LOG);
 
     // Smooth parameters
-    fonepole(freq_, target_freq, 0.05f);
-    fonepole(res_, k_res, 0.05f);
-    fonepole(drive_, drive_amount_, 0.05f);
+    fonepole(freq_, target_freq, kParamSmoothCoeff);
+    fonepole(res_, k_res, kParamSmoothCoeff);
+    fonepole(drive_, drive_amount_, kParamSmoothCoeff);
+
+    // Calculate stereo spread (moved from Process for efficiency)
+    stereo_spread_ = 1.0f + (res_ * kStereoSpreadAmount);
   }
 
 private:
+  // Audio Processing Constants
+  static constexpr float kGateThreshold = 0.002f; // ~ -54dB
+  static constexpr float kGateAttack = 0.99f;
+  static constexpr float kGateRelease = 0.01f;
+  static constexpr float kDriveGainMultiplier = 16.0f;
+  static constexpr float kOversampleMidWeight = 0.4f;
+  static constexpr float kOversampleCurrWeight = 0.6f;
+  static constexpr float kStereoSpreadAmount = 0.05f; // Up to 5% spread
+  static constexpr float kParamSmoothCoeff = 0.05f;
+  static constexpr float kDriveEncoderSensitivity =
+      0.05f; // 5% change per click
+
+  // Wavefolder Constants
+  static constexpr float kWavefoldInputClamp = 5.0f;
+  static constexpr float kWavefoldStage2Gain = 1.5f;
+  static constexpr float kWavefoldStage3Gain = 1.2f;
+  static constexpr float kWavefoldOutputScale = 0.7f;
+
   Svf svf_l_, svf_r_;
   Svf svf_l2_, svf_r2_;             // Second stage for 24dB/oct
   Svf input_lpf_l_, input_lpf_r_;   // Input LPF stage 1
@@ -258,6 +285,7 @@ private:
   float freq_, res_, drive_;
   float env_follower_l_, env_follower_r_; // For Noise Gate
   float hist_l_[4], hist_r_[4];           // Hermite interpolation history
+  float stereo_spread_;                   // Cached stereo spread value
 
   enum FilterMode { FILTER_HP, FILTER_BP, FILTER_LP } filter_mode_;
   enum DriveMode { DRIVE_WARM, DRIVE_HARD, DRIVE_DESTROY } drive_mode_;
@@ -301,32 +329,35 @@ private:
   float Wavefolder(float x) {
     // Safety Clamp: Impide que entren valores locos que hagan explotar el
     // algoritmo
-    if (x > 5.0f)
-      x = 5.0f;
-    if (x < -5.0f)
-      x = -5.0f;
+    if (x > kWavefoldInputClamp)
+      x = kWavefoldInputClamp;
+    if (x < -kWavefoldInputClamp)
+      x = -kWavefoldInputClamp;
 
-    // Multi-stage wavefolder for complex harmonics
-    // Stage 1
+    // Multi-stage wavefolder with cubic interpolation for smoother, more
+    // musical folds Stage 1
     if (x > 1.0f)
       x = 2.0f - x;
     else if (x < -1.0f)
       x = -2.0f - x;
 
-    // Stage 2 (with gain boost)
-    x *= 1.5f;
-    if (x > 1.0f)
-      x = 2.0f - x;
-    else if (x < -1.0f)
-      x = -2.0f - x;
+    // Stage 2 (with gain boost and cubic folding for smoother harmonics)
+    x *= kWavefoldStage2Gain;
+    if (x > 1.0f) {
+      float overshoot = x - 1.0f;
+      x = 1.0f - (overshoot * overshoot * overshoot); // Cubic fold
+    } else if (x < -1.0f) {
+      float overshoot = -x - 1.0f;
+      x = -1.0f + (overshoot * overshoot * overshoot); // Cubic fold
+    }
 
     // Stage 3 (subtle fold for complexity)
-    x *= 1.2f;
+    x *= kWavefoldStage3Gain;
     if (x > 1.0f)
       x = 2.0f - x;
     else if (x < -1.0f)
       x = -2.0f - x;
 
-    return x * 0.7f; // Scale down to prevent clipping
+    return x * kWavefoldOutputScale; // Scale down to prevent clipping
   }
 };

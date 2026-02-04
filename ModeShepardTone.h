@@ -17,7 +17,7 @@ public:
     // Init 8 voices for cleaner sound (less mud)
     for (int i = 0; i < NUM_VOICES; i++) {
       voice_phase_[i] = (float)i / (float)NUM_VOICES;
-      // Exponential frequency distribution handled in Process
+      osc_phasor_[i] = 0.0f;
     }
 
     // Integrated Reverb for "Beautiful" sound
@@ -71,13 +71,6 @@ public:
 
       // Calculate Frequency
       // 20Hz * 2^(10 * position) -> 10 octaves range
-      // Center freq adjustable by "range" parameter
-      float center_octave = 5.0f + (range_ * 4.0f); // 5 to 9 octaves center
-      float octave = (voice_phase_[i] * 10.0f) - 5.0f + center_octave;
-      // Map 0..1 to -5..+5 octaves relative to center?
-      // Let's simplify: 20Hz base. 2^10 = 1024 * 20 = 20kHz.
-      // Full range 20Hz to 20kHz is ~10 octaves.
-
       float freq = 20.0f * powf(2.0f, voice_phase_[i] * 10.0f);
 
       // Oscillator Generation (Pure Sine)
@@ -88,10 +81,9 @@ public:
 
       float sine_out = sinf(osc_phasor_[i] * SHEPARD_TWOPI);
 
-      // Stereo Pan based on pitch or random?
-      // Let's pan increasingly wide based on LFO and pitch
+      // Stereo Pan based on LFO and voice index
       float pan = spread_mod * 0.5f; // -0.5 to 0.5
-      // Add subtle offset per voice
+      // Add subtle offset per voice for width
       if (i % 2 == 0)
         pan += 0.2f;
       else
@@ -104,13 +96,14 @@ public:
       sum_r += sine_out * gain_r;
     }
 
-    // 2. Normalize Sum (8 voices, max overlap is limited, but safe div by 6)
-    sum_l *= 0.15f;
-    sum_r *= 0.15f;
+    // 2. Normalize Sum (8 voices, safe normalization)
+    sum_l *= kVoiceNormalization;
+    sum_r *= kVoiceNormalization;
 
     // 3. Tone Shaping (Low Pass for warmth)
     tone_filter_l_.SetFreq(tone_cutoff_);
-    tone_filter_r_.SetFreq(tone_cutoff_ * 1.1f); // Subtle stereo diff
+    tone_filter_r_.SetFreq(tone_cutoff_ *
+                           kToneStereoSpread); // Subtle stereo diff
     tone_filter_l_.Process(sum_l);
     tone_filter_r_.Process(sum_r);
     sum_l = tone_filter_l_.Low();
@@ -126,8 +119,8 @@ public:
 
     // 5. Final Limiting (Safety)
     // Soft tanh limit
-    sum_l = tanhf(sum_l * 1.5f) * 0.9f;
-    sum_r = tanhf(sum_r * 1.5f) * 0.9f;
+    sum_l = tanhf(sum_l * kFinalLimitGain) * kFinalLimitScale;
+    sum_r = tanhf(sum_r * kFinalLimitGain) * kFinalLimitScale;
 
     *out_l = sum_l;
     *out_r = sum_r;
@@ -137,15 +130,15 @@ public:
     // Knob 1: Speed
     float k_speed = hw.controls[DaisyLegio::CONTROL_KNOB_TOP].Value();
     // Exponential speed: 0.01Hz to 5.0Hz (octaves per sec)
-    speed_ = 0.01f * powf(100.0f, k_speed);
+    speed_ = kSpeedMin * powf(kSpeedRange, k_speed);
 
     // Knob 2: Tone / Brightness
     float k_tone = hw.controls[DaisyLegio::CONTROL_KNOB_BOTTOM].Value();
-    tone_cutoff_ = 200.0f + (k_tone * k_tone * 12000.0f); // 200Hz to 12kHz
+    tone_cutoff_ = kToneMin + (k_tone * k_tone * kToneRange); // 200Hz to 12kHz
 
     // Encoder Turn: Reverb Amount (The aesthetic control)
     float inc = hw.encoder.Increment();
-    reverb_amount_ += inc * 0.05f;
+    reverb_amount_ += inc * kReverbEncoderSensitivity;
     if (reverb_amount_ > 1.0f)
       reverb_amount_ = 1.0f;
     if (reverb_amount_ < 0.0f)
@@ -172,6 +165,19 @@ public:
   }
 
 private:
+  // Audio Processing Constants
+  static constexpr float kVoiceNormalization = 0.15f;
+  static constexpr float kToneStereoSpread = 1.1f;
+  static constexpr float kFinalLimitGain = 1.5f;
+  static constexpr float kFinalLimitScale = 0.9f;
+
+  // Control Constants
+  static constexpr float kSpeedMin = 0.01f;
+  static constexpr float kSpeedRange = 100.0f;
+  static constexpr float kToneMin = 200.0f;
+  static constexpr float kToneRange = 12000.0f;
+  static constexpr float kReverbEncoderSensitivity = 0.05f;
+
   float fs_;
   float voice_phase_[NUM_VOICES]; // 0.0 to 1.0 (shepard cycle position)
   float osc_phasor_[NUM_VOICES];  // 0.0 to 1.0 (sine wave phase)

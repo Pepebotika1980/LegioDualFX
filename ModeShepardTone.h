@@ -100,10 +100,8 @@ public:
     sum_l *= kVoiceNormalization;
     sum_r *= kVoiceNormalization;
 
-    // 3. Tone Shaping (Low Pass for warmth)
-    tone_filter_l_.SetFreq(tone_cutoff_);
-    tone_filter_r_.SetFreq(tone_cutoff_ *
-                           kToneStereoSpread); // Subtle stereo diff
+    // 3. Tone Shaping (Low Pass for warmth) - filters already configured in
+    // UpdateControls
     tone_filter_l_.Process(sum_l);
     tone_filter_r_.Process(sum_r);
     sum_l = tone_filter_l_.Low();
@@ -135,6 +133,10 @@ public:
     // Knob 2: Tone / Brightness
     float k_tone = hw.controls[DaisyLegio::CONTROL_KNOB_BOTTOM].Value();
     tone_cutoff_ = kToneMin + (k_tone * k_tone * kToneRange); // 200Hz to 12kHz
+
+    // Update tone filters (moved from Process for efficiency)
+    tone_filter_l_.SetFreq(tone_cutoff_);
+    tone_filter_r_.SetFreq(tone_cutoff_ * kToneStereoSpread);
 
     // Encoder Turn: Reverb Amount (The aesthetic control)
     float inc = hw.encoder.Increment();

@@ -36,6 +36,10 @@ Se han implementado mejoras significativas en todos los archivos del firmware, m
 - ✅ Eliminada variable `octave` no utilizada (línea 76 del código original)
 - ✅ Código muerto removido
 
+#### Optimizaciones de Rendimiento:
+- ✅ Movido `SetFreq()` de tone filters de `Process()` a `UpdateControls()`
+- ✅ Reducción de ~96,000 llamadas a función por segundo (2 filtros × 48kHz)
+
 #### Mejoras de Código:
 - ✅ Constantes nombradas para todos los parámetros
 - ✅ `kVoiceNormalization`, `kSpeedMin`, `kSpeedRange`, `kToneMin`, etc.
@@ -96,8 +100,9 @@ Se han implementado mejoras significativas en todos los archivos del firmware, m
 
 ### Estimación de Mejoras de CPU:
 - **ModeFilterDrive**: ~2-3% reducción de uso de CPU
+- **ModeShepardTone**: ~1% reducción de uso de CPU
 - **main.cpp**: ~1-2% reducción de uso de CPU
-- **Total**: ~3-5% más de headroom disponible
+- **Total**: ~4-6% más de headroom disponible
 
 ### Beneficios:
 - Más margen para futuras features

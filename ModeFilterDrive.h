@@ -194,8 +194,18 @@ public:
     r_filtered *= comp_gain;
 
     // Final Safety Limiter (Soft Clip)
-    *out_l = tanhf(l_filtered);
-    *out_r = tanhf(r_filtered);
+    float final_l = tanhf(l_filtered);
+    float final_r = tanhf(r_filtered);
+
+    // NAN Check / Safety Recovery (Soluciona el "petado" reiniciando el filtro)
+    if (isnan(final_l) || isinf(final_l) || isnan(final_r) || isinf(final_r)) {
+      Init(fs_);
+      final_l = 0.0f;
+      final_r = 0.0f;
+    }
+
+    *out_l = final_l;
+    *out_r = final_r;
   }
 
   void UpdateControls(DaisyLegio &hw) {
@@ -289,6 +299,13 @@ private:
   }
 
   float Wavefolder(float x) {
+    // Safety Clamp: Impide que entren valores locos que hagan explotar el
+    // algoritmo
+    if (x > 5.0f)
+      x = 5.0f;
+    if (x < -5.0f)
+      x = -5.0f;
+
     // Multi-stage wavefolder for complex harmonics
     // Stage 1
     if (x > 1.0f)
